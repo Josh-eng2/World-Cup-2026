@@ -1,0 +1,1467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Penalty Fever 2026 ⚽</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: #0a0e1a;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #wrap {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+    box-shadow: 0 0 80px rgba(0, 200, 120, 0.15);
+    border-radius: 8px;
+    cursor: crosshair;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="960" height="600"></canvas></div>
+<script>
+'use strict';
+
+// ============================================================
+//  PENALTY FEVER 2026 — a World Cup penalty shootout game
+//  Pick your nation, shoot AND save through the knockout
+//  rounds, and lift the trophy. Everything drawn on canvas,
+//  all sound synthesized live. No assets, no dependencies.
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ---------- Teams (2026 hosts first) ----------
+const TEAMS = [
+  { name: 'USA',         flag: '🇺🇸', c1: '#1d3f8f', c2: '#c81f2e', skill: 0.62 },
+  { name: 'Mexico',      flag: '🇲🇽', c1: '#0b6b3a', c2: '#c1272d', skill: 0.66 },
+  { name: 'Canada',      flag: '🇨🇦', c1: '#d52b1e', c2: '#ffffff', skill: 0.58 },
+  { name: 'Brazil',      flag: '🇧🇷', c1: '#ffd400', c2: '#009739', skill: 0.86 },
+  { name: 'Argentina',   flag: '🇦🇷', c1: '#75aadb', c2: '#ffffff', skill: 0.88 },
+  { name: 'France',      flag: '🇫🇷', c1: '#0f2f8c', c2: '#e1000f', skill: 0.87 },
+  { name: 'England',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', c1: '#ffffff', c2: '#cf081f', skill: 0.82 },
+  { name: 'Spain',       flag: '🇪🇸', c1: '#aa151b', c2: '#f1bf00', skill: 0.85 },
+  { name: 'Germany',     flag: '🇩🇪', c1: '#ffffff', c2: '#000000', skill: 0.80 },
+  { name: 'Portugal',    flag: '🇵🇹', c1: '#c00d0d', c2: '#046a38', skill: 0.81 },
+  { name: 'Netherlands', flag: '🇳🇱', c1: '#ff6a00', c2: '#21468b', skill: 0.78 },
+  { name: 'Italy',       flag: '🇮🇹', c1: '#0066b2', c2: '#ffffff', skill: 0.77 },
+  { name: 'Japan',       flag: '🇯🇵', c1: '#12327f', c2: '#ffffff', skill: 0.72 },
+  { name: 'Morocco',     flag: '🇲🇦', c1: '#c1272d', c2: '#006233', skill: 0.74 },
+  { name: 'Croatia',     flag: '🇭🇷', c1: '#ff0000', c2: '#ffffff', skill: 0.75 },
+  { name: 'Uruguay',     flag: '🇺🇾', c1: '#7ab8e6', c2: '#ffffff', skill: 0.73 },
+];
+const ROUNDS = ['ROUND OF 16', 'QUARTER-FINAL', 'SEMI-FINAL', 'WORLD CUP FINAL'];
+
+// ---------- Goal geometry (screen space) ----------
+const GOAL = { x: W / 2, y: 210, w: 460, h: 150 };  // crossbar center + size
+const GOAL_L = GOAL.x - GOAL.w / 2;
+const GOAL_R = GOAL.x + GOAL.w / 2;
+const GOAL_TOP = GOAL.y;
+const GOAL_BOT = GOAL.y + GOAL.h;
+const SPOT = { x: W / 2, y: 505 };                  // penalty spot
+
+// ---------- Audio: everything synthesized ----------
+const AudioFX = (() => {
+  let ac = null, crowdGain = null, crowdSrc = null;
+  function ensure() {
+    if (ac) return;
+    try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+    // Crowd: looped filtered noise, swells on excitement
+    const len = ac.sampleRate * 2;
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * 0.6;
+    crowdSrc = ac.createBufferSource();
+    crowdSrc.buffer = buf; crowdSrc.loop = true;
+    const lp = ac.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.5;
+    crowdGain = ac.createGain(); crowdGain.gain.value = 0.05;
+    crowdSrc.connect(lp); lp.connect(crowdGain); crowdGain.connect(ac.destination);
+    crowdSrc.start();
+  }
+  function blip(freq, dur, type, vol, slideTo) {
+    if (!ac) return;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || 'sine'; o.frequency.value = freq;
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, ac.currentTime + dur);
+    g.gain.setValueAtTime(vol || 0.2, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + dur);
+  }
+  function noiseHit(dur, vol, freq) {
+    if (!ac) return;
+    const len = ac.sampleRate * dur;
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const s = ac.createBufferSource(); s.buffer = buf;
+    const f = ac.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq || 300;
+    const g = ac.createGain(); g.gain.value = vol || 0.3;
+    s.connect(f); f.connect(g); g.connect(ac.destination); s.start();
+  }
+  return {
+    unlock() { ensure(); if (ac && ac.state === 'suspended') ac.resume(); },
+    crowd(level, secs) { // level 0..1
+      if (!crowdGain) return;
+      crowdGain.gain.cancelScheduledValues(ac.currentTime);
+      crowdGain.gain.setTargetAtTime(0.04 + level * 0.22, ac.currentTime, 0.08);
+      crowdGain.gain.setTargetAtTime(0.05, ac.currentTime + (secs || 2), 1.2);
+    },
+    kick()    { noiseHit(0.12, 0.5, 250); },
+    whistle() { blip(2450, 0.35, 'square', 0.12); setTimeout(() => blip(2450, 0.5, 'square', 0.12), 420); },
+    goal()    { this.crowd(1, 3.5); blip(523, 0.15, 'triangle', 0.25); setTimeout(() => blip(659, 0.15, 'triangle', 0.25), 140); setTimeout(() => blip(784, 0.4, 'triangle', 0.3), 280); },
+    save()    { this.crowd(0.7, 2); noiseHit(0.25, 0.4, 600); blip(300, 0.3, 'sawtooth', 0.15, 120); },
+    miss()    { this.crowd(0.45, 1.5); blip(220, 0.5, 'sine', 0.2, 110); },
+    post()    { blip(180, 0.4, 'square', 0.3, 90); noiseHit(0.1, 0.3, 1500); },
+    click()   { blip(880, 0.06, 'sine', 0.15); },
+    fanfare() {
+      this.crowd(1, 6);
+      [523, 523, 523, 659, 784, 1047].forEach((f, i) =>
+        setTimeout(() => blip(f, i === 5 ? 0.8 : 0.22, 'triangle', 0.3), i * 170));
+    },
+  };
+})();
+
+// ---------- Utilities ----------
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// ---------- Particles (confetti, grass chunks, flash sparks) ----------
+const particles = [];
+function burstConfetti(x, y, n, colors) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      x, y,
+      vx: rand(-4, 4), vy: rand(-9, -2),
+      g: 0.18, life: rand(60, 140), age: 0,
+      w: rand(4, 9), h: rand(6, 12), rot: rand(0, 6.28), vr: rand(-0.25, 0.25),
+      color: colors[(Math.random() * colors.length) | 0],
+      type: 'confetti',
+    });
+  }
+}
+function burstSpark(x, y, n, color) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2), s = rand(1, 5);
+    particles.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      g: 0.05, life: rand(15, 35), age: 0, r: rand(1.5, 3.5),
+      color, type: 'spark',
+    });
+  }
+}
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.age++;
+    p.x += p.vx; p.y += p.vy; p.vy += p.g;
+    if (p.type === 'confetti') { p.rot += p.vr; p.vx *= 0.99; }
+    if (p.age > p.life || p.y > H + 30) particles.splice(i, 1);
+  }
+}
+function drawParticles() {
+  for (const p of particles) {
+    const alpha = 1 - p.age / p.life;
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.fillStyle = p.color;
+    if (p.type === 'confetti') {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, Math.abs(Math.sin(p.age * 0.15)) * p.h + 2);
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- Game state ----------
+const G = {
+  scene: 'menu',           // menu | select | matchIntro | shootout | matchOver | champion | eliminated
+  frame: 0,
+  shake: 0,
+  mouse: { x: W / 2, y: H / 2, down: false },
+  player: null,            // player team
+  opp: null,               // current opponent
+  roundIdx: 0,             // 0..3 through ROUNDS
+  bracket: [],             // opponents drawn for the run
+  // shootout state
+  kickNum: 0,              // 0-indexed kick number within shootout
+  playerScore: 0, oppScore: 0,
+  playerKicks: [], oppKicks: [],   // 'goal' | 'miss' | 'save' | null
+  phase: 'idle',           // shooting flow phases
+  phaseT: 0,
+  suddenDeath: false,
+  // shooting
+  aim: { x: W / 2, y: GOAL.y + 60 },
+  power: 0, powerDir: 1, charging: false,
+  ball: null,              // active ball flight
+  keeper: null,            // keeper anim state
+  banner: null,            // big text banner {text, sub, t, dur, color}
+  toast: null,
+  wonCup: false,
+};
+
+function setBanner(text, sub, color, dur) {
+  G.banner = { text, sub: sub || '', color: color || '#fff', t: 0, dur: dur || 90 };
+}
+
+function newKeeper(teamColors) {
+  return {
+    x: GOAL.x, y: GOAL_BOT - 4,
+    dive: 0,          // -1 left, 1 right, 0 middle
+    diveHigh: false,
+    diveT: 0, diving: false,
+    c1: teamColors.c1, c2: teamColors.c2,
+    stretch: 0,
+  };
+}
+
+// ---------- Bracket setup ----------
+function startTournament(team) {
+  G.player = team;
+  const pool = TEAMS.filter(t => t !== team).sort(() => Math.random() - 0.5);
+  // escalating difficulty: sort chosen 4 by skill
+  G.bracket = pool.slice(0, 4).sort((a, b) => a.skill - b.skill);
+  G.roundIdx = 0;
+  G.wonCup = false;
+  startMatch();
+}
+
+function startMatch() {
+  G.opp = G.bracket[G.roundIdx];
+  G.kickNum = 0;
+  G.playerScore = 0; G.oppScore = 0;
+  G.playerKicks = [null, null, null, null, null];
+  G.oppKicks = [null, null, null, null, null];
+  G.suddenDeath = false;
+  G.scene = 'matchIntro';
+  G.phaseT = 0;
+  AudioFX.whistle();
+}
+
+// Difficulty scales with opponent skill + round depth
+function oppDifficulty() {
+  return clamp(G.opp.skill + G.roundIdx * 0.05, 0, 0.97);
+}
+
+// ---------- Shootout logic ----------
+// A shootout is best-of-5, player shoots first, sudden death after.
+function beginKick() {
+  const playerTurn = isPlayerTurn();
+  G.phase = playerTurn ? 'aim' : 'defendReady';
+  G.phaseT = 0;
+  G.power = 0; G.charging = false;
+  G.ball = null;
+  G.keeper = newKeeper(playerTurn ? G.opp : G.player);
+  if (!playerTurn) {
+    // opponent decides their shot now
+    const diff = oppDifficulty();
+    const missChance = clamp(0.16 - diff * 0.1, 0.04, 0.2);
+    const offTarget = Math.random() < missChance;
+    let tx, ty;
+    if (offTarget) {
+      tx = Math.random() < 0.5 ? GOAL_L - rand(20, 70) : GOAL_R + rand(20, 70);
+      ty = rand(GOAL_TOP - 40, GOAL_BOT - 30);
+    } else {
+      // corners more likely for skilled teams
+      const corner = Math.random() < diff;
+      tx = GOAL.x + (Math.random() < 0.5 ? -1 : 1) * (corner ? rand(GOAL.w * 0.3, GOAL.w * 0.46) : rand(0, GOAL.w * 0.25));
+      ty = corner ? (Math.random() < 0.5 ? rand(GOAL_TOP + 12, GOAL_TOP + 50) : rand(GOAL_BOT - 45, GOAL_BOT - 10))
+                  : rand(GOAL_TOP + 30, GOAL_BOT - 15);
+    }
+    G.oppShot = { tx, ty, offTarget, windup: 75 + rand(0, 50) };
+  }
+}
+
+function isPlayerTurn() {
+  // player kicks on even kickNum (shoots first)
+  return G.kickNum % 2 === 0;
+}
+function kickIndex() { return Math.floor(G.kickNum / 2); }
+
+function recordResult(result) {
+  // result from the shooter's perspective: 'goal' | 'save' | 'miss'
+  const idx = kickIndex();
+  const shooterIsPlayer = isPlayerTurn();
+  if (shooterIsPlayer) {
+    if (!G.suddenDeath) G.playerKicks[idx] = result;
+    if (result === 'goal') G.playerScore++;
+  } else {
+    if (!G.suddenDeath) G.oppKicks[idx] = result;
+    if (result === 'goal') G.oppScore++;
+  }
+  G.lastResult = { result, shooterIsPlayer };
+}
+
+function checkShootoutOver() {
+  const kicksTakenP = Math.ceil((G.kickNum + 1) / 2);       // player kicks taken
+  const kicksTakenO = Math.floor((G.kickNum + 1) / 2);      // opp kicks taken
+  if (!G.suddenDeath) {
+    const remP = 5 - kicksTakenP, remO = 5 - kicksTakenO;
+    // decided early?
+    if (G.playerScore > G.oppScore + remO) return 'player';
+    if (G.oppScore > G.playerScore + remP) return 'opp';
+    if (kicksTakenP === 5 && kicksTakenO === 5) {
+      if (G.playerScore !== G.oppScore) return G.playerScore > G.oppScore ? 'player' : 'opp';
+      G.suddenDeath = true;
+      setBanner('SUDDEN DEATH', 'Next miss loses it all', '#ffd24a', 110);
+      return null;
+    }
+  } else {
+    // in sudden death, compare after each complete pair
+    if ((G.kickNum + 1) % 2 === 0 && G.playerScore !== G.oppScore) {
+      return G.playerScore > G.oppScore ? 'player' : 'opp';
+    }
+  }
+  return null;
+}
+
+function endMatch(winner) {
+  G.phase = 'idle';
+  if (winner === 'player') {
+    if (G.roundIdx === 3) {
+      G.scene = 'champion';
+      G.wonCup = true;
+      AudioFX.fanfare();
+      for (let i = 0; i < 5; i++) {
+        setTimeout(() => burstConfetti(rand(100, W - 100), rand(50, 200), 60,
+          ['#ffd24a', '#fff', G.player.c1, G.player.c2, '#7CFC00']), i * 350);
+      }
+    } else {
+      G.scene = 'matchOver';
+      G.matchOverWin = true;
+      AudioFX.fanfare();
+      burstConfetti(W / 2, 150, 120, ['#ffd24a', '#fff', G.player.c1, G.player.c2]);
+    }
+  } else {
+    G.scene = 'matchOver';
+    G.matchOverWin = false;
+    AudioFX.crowd(0.3, 3);
+  }
+  G.phaseT = 0;
+}
+
+// ---------- Ball flight ----------
+function launchBall(tx, ty, power, curve) {
+  AudioFX.kick();
+  AudioFX.crowd(0.5, 1.5);
+  G.ball = {
+    sx: SPOT.x, sy: SPOT.y - 10,
+    tx, ty,
+    t: 0,
+    dur: lerp(46, 26, power),   // frames: harder = faster
+    curve: curve || 0,
+    power,
+    done: false,
+  };
+}
+
+function ballPos(b) {
+  const t = ease(clamp(b.t / b.dur, 0, 1));
+  const x = lerp(b.sx, b.tx, t) + Math.sin(t * Math.PI) * b.curve * 60;
+  const y = lerp(b.sy, b.ty, t) - Math.sin(t * Math.PI) * lerp(90, 30, b.power);
+  const scale = lerp(1, 0.45, t);
+  return { x, y, scale, t };
+}
+
+// Where does keeper need to be to save a shot at (tx,ty)?
+function shotZone(tx, ty) {
+  const rel = (tx - GOAL.x) / (GOAL.w / 2);   // -1..1
+  const high = ty < GOAL_TOP + GOAL.h * 0.5;
+  return { rel, high };
+}
+
+// ---------- Keeper AI (when player shoots) ----------
+function keeperDecide(aimX, aimY, power) {
+  const diff = oppDifficulty();
+  // Keeper "reads" the shot with probability = diff, else guesses
+  const reads = Math.random() < diff * 0.72;
+  let targetRel;
+  if (reads) {
+    const z = shotZone(aimX, aimY);
+    targetRel = clamp(z.rel + rand(-0.25, 0.25), -1, 1);
+  } else {
+    targetRel = [-0.85, 0, 0.85][(Math.random() * 3) | 0];
+  }
+  const high = reads ? aimY < GOAL_TOP + GOAL.h * 0.5 : Math.random() < 0.4;
+  // reach shrinks as shot power grows
+  const reach = lerp(95, 55, power) * lerp(0.8, 1.15, diff);
+  return { targetRel, high, reach };
+}
+
+// ============================================================
+//  INPUT
+// ============================================================
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  G.mouse.x = (e.clientX - r.left) * (W / r.width);
+  G.mouse.y = (e.clientY - r.top) * (H / r.height);
+});
+canvas.addEventListener('mousedown', () => { G.mouse.down = true; onPress(); });
+canvas.addEventListener('mouseup', () => { G.mouse.down = false; onRelease(); });
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  G.mouse.x = (t.clientX - r.left) * (W / r.width);
+  G.mouse.y = (t.clientY - r.top) * (H / r.height);
+  G.mouse.down = true; onPress();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  G.mouse.x = (t.clientX - r.left) * (W / r.width);
+  G.mouse.y = (t.clientY - r.top) * (H / r.height);
+}, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); G.mouse.down = false; onRelease(); }, { passive: false });
+
+function onPress() {
+  AudioFX.unlock();
+  switch (G.scene) {
+    case 'menu':
+      AudioFX.click();
+      G.scene = 'select';
+      break;
+    case 'select': {
+      const pick = teamAt(G.mouse.x, G.mouse.y);
+      if (pick >= 0) {
+        AudioFX.click();
+        startTournament(TEAMS[pick]);
+      }
+      break;
+    }
+    case 'matchIntro':
+      if (G.phaseT > 30) {
+        G.scene = 'shootout';
+        beginKick();
+        AudioFX.whistle();
+      }
+      break;
+    case 'shootout':
+      if (G.phase === 'aim' && insideAimArea(G.mouse.x, G.mouse.y)) {
+        G.charging = true;
+        G.power = 0; G.powerDir = 1;
+        G.phase = 'charge';
+      }
+      break;
+    case 'matchOver':
+      if (G.phaseT > 45) {
+        AudioFX.click();
+        if (G.matchOverWin) { G.roundIdx++; startMatch(); }
+        else { G.scene = 'menu'; }
+      }
+      break;
+    case 'champion':
+      if (G.phaseT > 90) { AudioFX.click(); G.scene = 'menu'; }
+      break;
+  }
+}
+
+function onRelease() {
+  if (G.scene === 'shootout' && G.phase === 'charge') {
+    // fire!
+    const power = G.power;
+    // aim error grows with power (blasting is risky)
+    const err = Math.pow(power, 2.2) * 55;
+    const tx = G.aim.x + rand(-err, err);
+    const ty = G.aim.y + rand(-err * 0.7, err * 0.4);
+    const curve = rand(-0.35, 0.35) * power;
+    launchBall(tx, ty, Math.max(0.25, power), curve);
+    const kd = keeperDecide(G.aim.x, G.aim.y, power);
+    G.keeper.plan = kd;
+    G.phase = 'flight';
+    G.phaseT = 0;
+  }
+}
+
+function insideAimArea(x, y) {
+  return x > GOAL_L - 90 && x < GOAL_R + 90 && y > GOAL_TOP - 60 && y < GOAL_BOT + 30;
+}
+
+// Team-card grid geometry, shared by hover drawing and click hit-testing
+const GRID = { cols: 4, cw: 205, ch: 96, gx: 24, gy: 18, y: 120 };
+GRID.x = (W - GRID.cols * GRID.cw - (GRID.cols - 1) * GRID.gx) / 2;
+function teamAt(x, y) {
+  for (let i = 0; i < TEAMS.length; i++) {
+    const cx = GRID.x + (i % GRID.cols) * (GRID.cw + GRID.gx);
+    const cy = GRID.y + ((i / GRID.cols) | 0) * (GRID.ch + GRID.gy);
+    if (x > cx && x < cx + GRID.cw && y > cy && y < cy + GRID.ch) return i;
+  }
+  return -1;
+}
+
+// ============================================================
+//  UPDATE
+// ============================================================
+function update() {
+  G.frame++;
+  G.phaseT++;
+  if (G.shake > 0) G.shake *= 0.88;
+  updateParticles();
+  if (G.banner) { G.banner.t++; if (G.banner.t > G.banner.dur) G.banner = null; }
+
+  if (G.scene === 'shootout') updateShootout();
+}
+
+function updateShootout() {
+  const k = G.keeper;
+
+  switch (G.phase) {
+    case 'aim': {
+      // aim follows mouse inside goal area
+      if (insideAimArea(G.mouse.x, G.mouse.y)) {
+        G.aim.x = clamp(G.mouse.x, GOAL_L - 80, GOAL_R + 80);
+        G.aim.y = clamp(G.mouse.y, GOAL_TOP - 50, GOAL_BOT + 20);
+      }
+      // keeper sways
+      k.x = GOAL.x + Math.sin(G.frame * 0.05) * 18;
+      break;
+    }
+    case 'charge': {
+      G.aim.x = clamp(G.mouse.x, GOAL_L - 80, GOAL_R + 80);
+      G.aim.y = clamp(G.mouse.y, GOAL_TOP - 50, GOAL_BOT + 20);
+      G.power += G.powerDir * 0.025;
+      if (G.power >= 1) { G.power = 1; G.powerDir = -1; }
+      if (G.power <= 0) { G.power = 0; G.powerDir = 1; }
+      k.x = GOAL.x + Math.sin(G.frame * 0.05) * 18;
+      break;
+    }
+    case 'flight': {
+      const b = G.ball;
+      b.t++;
+      // keeper starts dive partway through flight
+      const diveStart = b.dur * 0.25;
+      if (b.t > diveStart && !k.diving) {
+        k.diving = true;
+        k.diveT = 0;
+      }
+      if (k.diving) {
+        k.diveT++;
+        const dt = clamp(k.diveT / (b.dur * 0.6), 0, 1);
+        k.x = GOAL.x + k.plan.targetRel * (GOAL.w / 2 - 30) * ease(dt);
+        k.stretch = ease(dt);
+        k.diveHigh = k.plan.high;
+      }
+      if (b.t >= b.dur && !b.done) {
+        b.done = true;
+        resolvePlayerShot();
+      }
+      break;
+    }
+    case 'defendReady': {
+      // player is keeper; show run-up. Keeper follows mouse x.
+      k.x = clamp(G.mouse.x, GOAL_L + 25, GOAL_R - 25);
+      k.y = GOAL_BOT - 4;
+      if (G.phaseT >= G.oppShot.windup) {
+        // opponent kicks
+        launchBall(G.oppShot.tx, G.oppShot.ty, rand(0.5, 0.9), rand(-0.3, 0.3));
+        G.phase = 'defendFlight';
+        G.phaseT = 0;
+        G.keeperLockX = null;
+      }
+      break;
+    }
+    case 'defendFlight': {
+      const b = G.ball;
+      b.t++;
+      // keeper can adjust until ball is 55% of the way there, then locks & dives
+      const lockAt = b.dur * 0.55;
+      if (b.t < lockAt) {
+        k.x = clamp(G.mouse.x, GOAL_L + 25, GOAL_R - 25);
+        G.keeperLockX = k.x;
+        k.diveHigh = G.mouse.y < GOAL_TOP + GOAL.h * 0.55;
+      } else {
+        k.diving = true;
+        k.diveT++;
+        k.stretch = clamp(k.diveT / 10, 0, 1);
+      }
+      if (b.t >= b.dur && !b.done) {
+        b.done = true;
+        resolveOppShot();
+      }
+      break;
+    }
+    case 'result': {
+      if (G.phaseT > 75) {
+        const winner = checkShootoutOver();
+        if (winner) { endMatch(winner); }
+        else {
+          G.kickNum++;
+          beginKick();
+        }
+      }
+      break;
+    }
+  }
+}
+
+function resolvePlayerShot() {
+  const b = G.ball;
+  const k = G.keeper;
+  G.phase = 'result';
+  G.phaseT = 0;
+
+  const inGoalX = b.tx > GOAL_L + 8 && b.tx < GOAL_R - 8;
+  const inGoalY = b.ty > GOAL_TOP + 6 && b.ty < GOAL_BOT;
+  const hitWoodwork = !((b.tx > GOAL_L + 8 && b.tx < GOAL_R - 8) && (b.ty > GOAL_TOP + 6)) &&
+                      (b.tx > GOAL_L - 14 && b.tx < GOAL_R + 14 && b.ty > GOAL_TOP - 14 && b.ty < GOAL_BOT);
+
+  if (!inGoalX || !inGoalY) {
+    if (hitWoodwork) {
+      AudioFX.post();
+      G.shake = 10;
+      burstSpark(b.tx, b.ty, 20, '#fff');
+      setBanner('OFF THE WOODWORK!', 'So close…', '#ff9d4a');
+    } else {
+      AudioFX.miss();
+      setBanner('WIDE!', 'Row Z…', '#ff6b6b');
+    }
+    recordResult('miss');
+    return;
+  }
+
+  // keeper save check: distance from keeper's dive point to ball at goal plane
+  const keeperReachX = Math.abs(b.tx - k.x);
+  const ballHigh = b.ty < GOAL_TOP + GOAL.h * 0.5;
+  const heightMatch = (k.plan && k.plan.high === ballHigh) ? 1 : 0.45;
+  const reach = (k.plan ? k.plan.reach : 70) * heightMatch;
+
+  if (keeperReachX < reach) {
+    AudioFX.save();
+    G.shake = 6;
+    burstSpark(b.tx, b.ty, 14, '#ffd24a');
+    setBanner('SAVED!', `${G.opp.name}'s keeper flies!`, '#4ac3ff');
+    recordResult('save');
+  } else {
+    AudioFX.goal();
+    G.shake = 4;
+    burstSpark(b.tx, b.ty, 26, '#7CFC00');
+    burstConfetti(b.tx, b.ty - 20, 30, [G.player.c1, G.player.c2, '#fff']);
+    setBanner('GOOOAL!', `${G.player.name} scores!`, '#7CFC00');
+    recordResult('goal');
+  }
+}
+
+function resolveOppShot() {
+  const b = G.ball;
+  const k = G.keeper;
+  G.phase = 'result';
+  G.phaseT = 0;
+
+  if (G.oppShot.offTarget) {
+    AudioFX.miss();
+    setBanner('WIDE!', `${G.opp.name} blazes it over!`, '#7CFC00');
+    recordResult('miss');
+    return;
+  }
+
+  const keeperX = G.keeperLockX != null ? G.keeperLockX : k.x;
+  const ballHigh = b.ty < GOAL_TOP + GOAL.h * 0.5;
+  const heightMatch = (k.diveHigh === ballHigh) ? 1 : 0.5;
+  const reach = 78 * heightMatch;
+
+  if (Math.abs(b.tx - keeperX) < reach) {
+    AudioFX.save();
+    G.shake = 8;
+    burstSpark(b.tx, b.ty, 22, '#ffd24a');
+    burstConfetti(b.tx, b.ty, 16, [G.player.c1, G.player.c2, '#fff']);
+    setBanner('WHAT A SAVE!', 'You guessed right!', '#4ac3ff');
+    recordResult('save');
+  } else {
+    AudioFX.goal();
+    setBanner('GOAL…', `${G.opp.name} converts.`, '#ff6b6b');
+    recordResult('goal');
+  }
+}
+
+// ============================================================
+//  DRAWING
+// ============================================================
+function drawStadium() {
+  // night sky
+  const sky = ctx.createLinearGradient(0, 0, 0, H * 0.45);
+  sky.addColorStop(0, '#060a18');
+  sky.addColorStop(1, '#12203f');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H * 0.45);
+
+  // stadium tiers with shimmering crowd
+  for (let tier = 0; tier < 3; tier++) {
+    const ty = 30 + tier * 42;
+    ctx.fillStyle = ['#1a2440', '#202c50', '#283760'][tier];
+    ctx.fillRect(0, ty, W, 40);
+    // crowd dots
+    const seed = tier * 999;
+    ctx.save();
+    for (let i = 0; i < 130; i++) {
+      const cx = ((i * 73.7 + seed) % W);
+      const cy = ty + 6 + ((i * 37.3 + seed) % 30);
+      const tw = Math.sin(G.frame * 0.1 + i * 1.7) > 0.85;
+      ctx.fillStyle = tw ? '#ffe9a8' : ['#5a6a94', '#748', '#467', '#856', '#578'][(i + tier) % 5];
+      ctx.fillRect(cx, cy, 3, 3);
+    }
+    ctx.restore();
+  }
+
+  // floodlight glow
+  for (const lx of [80, W - 80]) {
+    const g = ctx.createRadialGradient(lx, 20, 5, lx, 20, 260);
+    g.addColorStop(0, 'rgba(255,250,220,0.35)');
+    g.addColorStop(1, 'rgba(255,250,220,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(lx - 260, 0, 520, 300);
+  }
+
+  // hoardings
+  ctx.fillStyle = '#0d1226';
+  ctx.fillRect(0, 156, W, 26);
+  ctx.fillStyle = '#3ddc84';
+  ctx.font = 'bold 15px "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  const scroll = (G.frame * 0.6) % 480;
+  for (let i = -1; i < 4; i++) {
+    ctx.fillText('★ WORLD CUP 2026 ★', i * 480 - scroll + 240, 174);
+  }
+
+  // pitch
+  const grass = ctx.createLinearGradient(0, 182, 0, H);
+  grass.addColorStop(0, '#1e7a3a');
+  grass.addColorStop(1, '#2ea350');
+  ctx.fillStyle = grass;
+  ctx.fillRect(0, 182, W, H - 182);
+
+  // mow stripes (perspective fan)
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  for (let i = 0; i < 9; i++) {
+    if (i % 2) continue;
+    const topW = 60, botW = 150;
+    const cx = W / 2 + (i - 4) * topW;
+    const bx = W / 2 + (i - 4) * botW;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(cx - topW / 2, 182);
+    ctx.lineTo(cx + topW / 2, 182);
+    ctx.lineTo(bx + botW / 2, H);
+    ctx.lineTo(bx - botW / 2, H);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // penalty box
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(GOAL_L - 130, GOAL_BOT + 4);
+  ctx.lineTo(GOAL_L - 90, 470);
+  ctx.lineTo(GOAL_R + 90, 470);
+  ctx.lineTo(GOAL_R + 130, GOAL_BOT + 4);
+  ctx.stroke();
+  // spot
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(SPOT.x, SPOT.y - 8, 5, 0, Math.PI * 2);
+  ctx.fill();
+  // the D
+  ctx.beginPath();
+  ctx.arc(SPOT.x, 470, 70, Math.PI * 0.15, Math.PI * 0.85);
+  ctx.stroke();
+}
+
+function drawGoal() {
+  // net
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1;
+  const depth = 36;
+  for (let i = 0; i <= 14; i++) {
+    const x = GOAL_L + (GOAL.w / 14) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, GOAL_TOP);
+    ctx.lineTo(GOAL.x + (x - GOAL.x) * 0.88, GOAL_TOP - depth * 0.5);
+    ctx.lineTo(GOAL.x + (x - GOAL.x) * 0.88, GOAL_BOT - depth * 0.4);
+    ctx.lineTo(x, GOAL_BOT);
+    ctx.stroke();
+  }
+  for (let j = 0; j <= 6; j++) {
+    const y = GOAL_TOP + (GOAL.h / 6) * j;
+    ctx.beginPath();
+    ctx.moveTo(GOAL_L, y);
+    for (let i = 0; i <= 14; i++) {
+      const x = GOAL_L + (GOAL.w / 14) * i;
+      const sag = Math.sin((i / 14) * Math.PI) * 4;
+      ctx.lineTo(x, y + sag);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // posts + crossbar
+  ctx.strokeStyle = '#f4f4f4';
+  ctx.lineWidth = 7;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(GOAL_L, GOAL_BOT);
+  ctx.lineTo(GOAL_L, GOAL_TOP);
+  ctx.lineTo(GOAL_R, GOAL_TOP);
+  ctx.lineTo(GOAL_R, GOAL_BOT);
+  ctx.stroke();
+  ctx.lineCap = 'butt';
+}
+
+function drawKeeper(k, isPlayerKeeper) {
+  ctx.save();
+  ctx.translate(k.x, k.y);
+  const s = k.stretch || 0;
+  const dir = k.diving ? Math.sign((k.plan ? k.plan.targetRel : 0) || (G.keeperLockX != null ? 0 : 0)) || (k.x < GOAL.x ? -1 : 1) : 0;
+  if (k.diving) {
+    ctx.rotate(dir * s * (k.diveHigh ? -0.9 : -0.35) * (k.x < GOAL.x ? 1 : -1) * -1);
+    if (k.diveHigh) ctx.translate(0, -s * 30);
+  }
+  const bob = Math.sin(G.frame * 0.15) * 2 * (k.diving ? 0 : 1);
+
+  // legs
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(-8, -28 + bob); ctx.lineTo(-11 - s * 10, 0);
+  ctx.moveTo(8, -28 + bob); ctx.lineTo(11 + s * 18, -s * 8);
+  ctx.stroke();
+  // torso
+  ctx.fillStyle = k.c1;
+  roundRect(-14, -62 + bob, 28, 38, 8);
+  ctx.fill();
+  ctx.strokeStyle = k.c2;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // arms: spread when set, stretched when diving
+  ctx.strokeStyle = k.c1;
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  const armSpread = k.diving ? 40 + s * 25 : 26;
+  const armUp = k.diving ? (k.diveHigh ? -35 - s * 20 : -10) : -20;
+  ctx.moveTo(-12, -52 + bob); ctx.lineTo(-armSpread, -52 + armUp + bob);
+  ctx.moveTo(12, -52 + bob); ctx.lineTo(armSpread, -52 + armUp + bob);
+  ctx.stroke();
+  // gloves
+  ctx.fillStyle = '#ffe14a';
+  ctx.beginPath();
+  ctx.arc(-armSpread, -52 + armUp + bob, 5.5, 0, Math.PI * 2);
+  ctx.arc(armSpread, -52 + armUp + bob, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+  // head
+  ctx.fillStyle = '#e8b98a';
+  ctx.beginPath();
+  ctx.arc(0, -72 + bob, 10, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#3a2a18';
+  ctx.beginPath();
+  ctx.arc(0, -76 + bob, 9, Math.PI, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  if (isPlayerKeeper && (G.phase === 'defendReady' || G.phase === 'defendFlight')) {
+    // glove cursor hint
+    ctx.fillStyle = 'rgba(255,225,74,0.9)';
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🧤', k.x, k.y - 96);
+  }
+}
+
+function drawShooter(color1, color2, windupT) {
+  // simple shooter figure beside the spot; leans in during windup
+  const lean = windupT != null ? clamp(windupT, 0, 1) : 0;
+  const x = SPOT.x - 40 + lean * 26, y = SPOT.y + 6;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(lean * 0.25);
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(-4, -24); ctx.lineTo(-10, 0);
+  ctx.moveTo(4, -24); ctx.lineTo(12 + lean * 10, -4);
+  ctx.stroke();
+  ctx.fillStyle = color1;
+  roundRect(-11, -52, 22, 30, 7);
+  ctx.fill();
+  ctx.strokeStyle = color2;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.fillStyle = '#e8b98a';
+  ctx.beginPath();
+  ctx.arc(0, -60, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBall(x, y, scale, spin) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.rotate(spin || 0);
+  // shadow handled by caller
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // pentagons
+  ctx.fillStyle = '#1a1a2e';
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(Math.cos(a) * 6.5, Math.sin(a) * 6.5, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.arc(0, 0, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawScoreboard() {
+  const bx = W / 2 - 210, by = 8, bw = 420, bh = 64;
+  ctx.fillStyle = 'rgba(8,12,26,0.88)';
+  roundRect(bx, by, bw, bh, 10);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,210,74,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 17px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`${G.player.flag} ${G.player.name}`, bx + 92, by + 25);
+  ctx.fillText(`${G.opp.name} ${G.opp.flag}`, bx + bw - 92, by + 25);
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = 'bold 26px "Segoe UI", sans-serif';
+  ctx.fillText(`${G.playerScore} — ${G.oppScore}`, bx + bw / 2, by + 30);
+  ctx.font = '11px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#9fb0d8';
+  ctx.fillText(G.suddenDeath ? 'SUDDEN DEATH' : ROUNDS[G.roundIdx], bx + bw / 2, by + 45);
+
+  // kick pips
+  const drawPips = (cx, kicks) => {
+    for (let i = 0; i < 5; i++) {
+      const px = cx - 44 + i * 22;
+      ctx.beginPath();
+      ctx.arc(px, by + 47, 6, 0, Math.PI * 2);
+      const r = kicks[i];
+      ctx.fillStyle = r === 'goal' ? '#3ddc84' : (r === null ? 'rgba(255,255,255,0.15)' : '#ff5b5b');
+      ctx.fill();
+      if (r === 'goal') {
+        ctx.strokeStyle = '#0a3';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+  };
+  drawPips(bx + 92, G.playerKicks);
+  drawPips(bx + bw - 92, G.oppKicks);
+}
+
+function drawBanner() {
+  if (!G.banner) return;
+  const b = G.banner;
+  const fade = b.t < 12 ? b.t / 12 : (b.t > b.dur - 20 ? (b.dur - b.t) / 20 : 1);
+  const pop = b.t < 12 ? 0.7 + 0.3 * ease(b.t / 12) : 1;
+  ctx.save();
+  ctx.globalAlpha = clamp(fade, 0, 1);
+  ctx.translate(W / 2, 330);
+  ctx.scale(pop, pop);
+  ctx.textAlign = 'center';
+  ctx.font = '900 52px "Segoe UI", sans-serif';
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.strokeText(b.text, 0, 0);
+  ctx.fillStyle = b.color;
+  ctx.fillText(b.text, 0, 0);
+  if (b.sub) {
+    ctx.font = '600 20px "Segoe UI", sans-serif';
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 4;
+    ctx.strokeText(b.sub, 0, 32);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(b.sub, 0, 32);
+  }
+  ctx.restore();
+}
+
+function drawPowerBar() {
+  const bx = W / 2 - 130, by = H - 46, bw = 260, bh = 20;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(bx - 4, by - 4, bw + 8, bh + 8, 8);
+  ctx.fill();
+  const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  g.addColorStop(0, '#3ddc84');
+  g.addColorStop(0.6, '#ffd24a');
+  g.addColorStop(1, '#ff4b4b');
+  ctx.fillStyle = g;
+  roundRect(bx, by, bw * G.power, bh, 6);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  roundRect(bx, by, bw, bh, 6);
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('POWER — release to shoot!', W / 2, by - 12);
+}
+
+function drawHint(text) {
+  ctx.fillStyle = 'rgba(8,12,26,0.75)';
+  ctx.font = '600 16px "Segoe UI", sans-serif';
+  roundRect(W / 2 - 190, H - 42, 380, 30, 8);
+  ctx.fill();
+  ctx.fillStyle = '#cfe0ff';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, W / 2, H - 22);
+}
+
+// ---------- Scene renderers ----------
+function drawMenu() {
+  drawStadium();
+  drawGoal();
+
+  // dim
+  ctx.fillStyle = 'rgba(4,8,20,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  // bouncing ball
+  const by = 300 + Math.abs(Math.sin(G.frame * 0.05)) * -60;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(W / 2 + 250, 320, 20 * (1 - (300 - by) / 200), 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  drawBall(W / 2 + 250, by, 1.6, G.frame * 0.05);
+
+  ctx.textAlign = 'center';
+  ctx.font = '900 74px "Segoe UI", sans-serif';
+  const grad = ctx.createLinearGradient(0, 150, 0, 240);
+  grad.addColorStop(0, '#ffd24a');
+  grad.addColorStop(1, '#ff8a2a');
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+  ctx.strokeText('PENALTY FEVER', W / 2, 210);
+  ctx.fillStyle = grad;
+  ctx.fillText('PENALTY FEVER', W / 2, 210);
+
+  ctx.font = '900 40px "Segoe UI", sans-serif';
+  ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+  ctx.lineWidth = 7;
+  ctx.strokeText('⚽ 2026 ⚽', W / 2, 262);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('⚽ 2026 ⚽', W / 2, 262);
+
+  ctx.font = '600 19px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#9fb0d8';
+  ctx.fillText('One nation. Five kicks. Zero nerves allowed.', W / 2, 310);
+
+  ctx.font = '600 17px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#cfe0ff';
+  ctx.fillText('🎯 SHOOT: hold to charge power, release to fire', W / 2, 375);
+  ctx.fillText('🧤 SAVE: move your keeper, guess the corner', W / 2, 403);
+  ctx.fillText('🏆 Win 4 shootouts to lift the World Cup', W / 2, 431);
+
+  if (Math.sin(G.frame * 0.08) > -0.3) {
+    ctx.font = '900 26px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#3ddc84';
+    ctx.fillText('— CLICK TO PLAY —', W / 2, 505);
+  }
+}
+
+function drawSelect() {
+  drawStadium();
+  ctx.fillStyle = 'rgba(4,8,20,0.72)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.font = '900 38px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText('CHOOSE YOUR NATION', W / 2, 66);
+  ctx.font = '600 15px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#9fb0d8';
+  ctx.fillText('⭐ = penalty pedigree (they still have to beat YOU)', W / 2, 94);
+
+  const { cw, ch: chh, gx, gy } = GRID;
+  const hoverIdx = teamAt(G.mouse.x, G.mouse.y);
+
+  TEAMS.forEach((t, i) => {
+    const x = GRID.x + (i % GRID.cols) * (cw + gx);
+    const y = GRID.y + ((i / GRID.cols) | 0) * (chh + gy);
+    const hover = i === hoverIdx;
+
+    ctx.save();
+    if (hover) {
+      ctx.shadowColor = '#ffd24a';
+      ctx.shadowBlur = 18;
+      ctx.translate(0, -3);
+    }
+    ctx.fillStyle = hover ? 'rgba(35,48,88,0.95)' : 'rgba(16,24,48,0.9)';
+    roundRect(x, y, cw, chh, 12);
+    ctx.fill();
+    ctx.strokeStyle = hover ? '#ffd24a' : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = hover ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // team color stripe
+    ctx.fillStyle = t.c1;
+    roundRect(x + 10, y + 12, 6, chh - 24, 3);
+    ctx.fill();
+    ctx.fillStyle = t.c2;
+    roundRect(x + 19, y + 12, 6, chh - 24, 3);
+    ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.font = '34px sans-serif';
+    ctx.fillText(t.flag, x + 38, y + 46);
+    ctx.font = '800 19px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(t.name, x + 88, y + 40);
+    // star rating
+    const stars = Math.round(t.skill * 5);
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = '#ffd24a';
+    ctx.fillText('⭐'.repeat(stars), x + 88, y + 64);
+    if (i < 3) {
+      ctx.font = '700 11px "Segoe UI", sans-serif';
+      ctx.fillStyle = '#3ddc84';
+      ctx.fillText('HOST NATION', x + 88, y + 82);
+    }
+    ctx.restore();
+  });
+  ctx.textAlign = 'center';
+}
+
+function drawMatchIntro() {
+  drawStadium();
+  drawGoal();
+  ctx.fillStyle = 'rgba(4,8,20,0.7)';
+  ctx.fillRect(0, 0, W, H);
+
+  const t = clamp(G.phaseT / 30, 0, 1);
+  ctx.save();
+  ctx.globalAlpha = ease(t);
+
+  ctx.textAlign = 'center';
+  ctx.font = '900 30px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText(`— ${ROUNDS[G.roundIdx]} —`, W / 2, 130);
+
+  // versus cards slide in
+  const slide = (1 - ease(t)) * 300;
+  const cardY = 200;
+  const card = (team, cx, isYou) => {
+    ctx.fillStyle = 'rgba(16,24,48,0.95)';
+    roundRect(cx - 150, cardY, 300, 170, 16);
+    ctx.fill();
+    ctx.strokeStyle = isYou ? '#3ddc84' : '#ff5b5b';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.font = '64px sans-serif';
+    ctx.fillText(team.flag, cx, cardY + 80);
+    ctx.font = '800 26px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(team.name, cx, cardY + 122);
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = '#ffd24a';
+    ctx.fillText('⭐'.repeat(Math.round(team.skill * 5)), cx, cardY + 146);
+    ctx.font = '700 14px "Segoe UI", sans-serif';
+    ctx.fillStyle = isYou ? '#3ddc84' : '#ff8a8a';
+    ctx.fillText(isYou ? 'YOU' : 'THEM', cx, cardY - 12);
+  };
+  card(G.player, W / 4 - slide, true);
+  card(G.opp, (3 * W) / 4 + slide, false);
+
+  ctx.font = '900 56px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.lineWidth = 8;
+  ctx.strokeText('VS', W / 2, cardY + 105);
+  ctx.fillText('VS', W / 2, cardY + 105);
+
+  if (G.phaseT > 30 && Math.sin(G.frame * 0.1) > -0.2) {
+    ctx.font = '800 22px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#3ddc84';
+    ctx.fillText('CLICK FOR KICK-OFF', W / 2, 470);
+  }
+  ctx.restore();
+}
+
+function drawShootout() {
+  drawStadium();
+
+  const playerTurn = isPlayerTurn();
+
+  drawGoal();
+
+  // keeper
+  if (G.keeper) drawKeeper(G.keeper, !playerTurn);
+
+  // shooter figure
+  if (playerTurn && (G.phase === 'aim' || G.phase === 'charge')) {
+    drawShooter(G.player.c1, G.player.c2, G.phase === 'charge' ? G.power : 0);
+  }
+  if (!playerTurn && G.phase === 'defendReady') {
+    drawShooter(G.opp.c1, G.opp.c2, clamp(G.phaseT / G.oppShot.windup, 0, 1));
+  }
+
+  // ball
+  if (G.ball && !G.ball.done) {
+    const p = ballPos(G.ball);
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(p.x, SPOT.y + 8 - (SPOT.y - p.y) * 0.15, 12 * p.scale, 4 * p.scale, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawBall(p.x, p.y, p.scale, G.ball.t * 0.4);
+  } else if (!G.ball && (G.phase === 'aim' || G.phase === 'charge' || G.phase === 'defendReady')) {
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(SPOT.x, SPOT.y + 2, 12, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawBall(SPOT.x, SPOT.y - 10, 1, 0);
+  } else if (G.ball && G.ball.done) {
+    // ball rests where it ended (in net or wide)
+    const p = ballPos(G.ball);
+    drawBall(p.x, p.y, p.scale, 0);
+  }
+
+  // aiming reticle
+  if (G.phase === 'aim' || G.phase === 'charge') {
+    const pulse = 1 + Math.sin(G.frame * 0.2) * 0.12;
+    ctx.save();
+    ctx.translate(G.aim.x, G.aim.y);
+    ctx.scale(pulse, pulse);
+    ctx.strokeStyle = G.phase === 'charge' ? '#ff4b4b' : '#3ddc84';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    for (const [a, b] of [[-24, -10], [10, 24]]) {
+      ctx.moveTo(a, 0); ctx.lineTo(b, 0);
+      ctx.moveTo(0, a); ctx.lineTo(0, b);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawScoreboard();
+  drawBanner();
+
+  // phase hints
+  if (G.phase === 'aim') drawHint('🎯 Aim at the goal — hold click to charge');
+  else if (G.phase === 'charge') drawPowerBar();
+  else if (G.phase === 'defendReady') drawHint(`🧤 YOU'RE IN GOAL — track the shot, mouse height picks high/low!`);
+
+  // sudden death vignette
+  if (G.suddenDeath) {
+    const v = ctx.createRadialGradient(W / 2, H / 2, 250, W / 2, H / 2, 560);
+    v.addColorStop(0, 'rgba(120,0,0,0)');
+    v.addColorStop(1, `rgba(120,0,0,${0.25 + Math.sin(G.frame * 0.06) * 0.1})`);
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function drawMatchOver() {
+  drawStadium();
+  drawGoal();
+  ctx.fillStyle = 'rgba(4,8,20,0.72)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  const t = clamp(G.phaseT / 25, 0, 1);
+  ctx.save();
+  ctx.globalAlpha = ease(t);
+  ctx.translate(0, (1 - ease(t)) * -40);
+
+  if (G.matchOverWin) {
+    ctx.font = '900 58px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#3ddc84';
+    ctx.fillText('YOU ADVANCE!', W / 2, 200);
+    ctx.font = '600 24px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${G.player.flag} ${G.player.name}  ${G.playerScore} — ${G.oppScore}  ${G.opp.name} ${G.opp.flag}`, W / 2, 260);
+    ctx.font = '600 20px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#ffd24a';
+    ctx.fillText(`Next up: ${ROUNDS[G.roundIdx + 1]} vs ${G.bracket[G.roundIdx + 1].flag} ${G.bracket[G.roundIdx + 1].name}`, W / 2, 330);
+  } else {
+    ctx.font = '900 58px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#ff5b5b';
+    ctx.fillText('HEARTBREAK…', W / 2, 200);
+    ctx.font = '600 24px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${G.player.flag} ${G.player.name}  ${G.playerScore} — ${G.oppScore}  ${G.opp.name} ${G.opp.flag}`, W / 2, 260);
+    ctx.font = '600 19px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#9fb0d8';
+    ctx.fillText(`Knocked out at the ${ROUNDS[G.roundIdx].toLowerCase()}. The nation weeps.`, W / 2, 330);
+  }
+
+  if (G.phaseT > 45 && Math.sin(G.frame * 0.1) > -0.2) {
+    ctx.font = '800 22px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#cfe0ff';
+    ctx.fillText(G.matchOverWin ? 'CLICK TO CONTINUE' : 'CLICK FOR MAIN MENU', W / 2, 450);
+  }
+  ctx.restore();
+}
+
+function drawChampion() {
+  drawStadium();
+  ctx.fillStyle = 'rgba(4,8,20,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  // golden spotlight
+  const g = ctx.createRadialGradient(W / 2, 280, 40, W / 2, 280, 420);
+  g.addColorStop(0, 'rgba(255,210,74,0.28)');
+  g.addColorStop(1, 'rgba(255,210,74,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // trophy
+  const ty = 250 + Math.sin(G.frame * 0.04) * 8;
+  ctx.save();
+  ctx.translate(W / 2, ty);
+  const shine = ctx.createLinearGradient(-40, -80, 40, 60);
+  shine.addColorStop(0, '#ffe98a');
+  shine.addColorStop(0.5, '#d4a017');
+  shine.addColorStop(1, '#ffd24a');
+  ctx.fillStyle = shine;
+  // cup body (the World Cup trophy silhouette-ish)
+  ctx.beginPath();
+  ctx.moveTo(-34, -70);
+  ctx.bezierCurveTo(-46, -30, -14, -18, -10, 10);
+  ctx.lineTo(10, 10);
+  ctx.bezierCurveTo(14, -18, 46, -30, 34, -70);
+  ctx.bezierCurveTo(20, -84, -20, -84, -34, -70);
+  ctx.fill();
+  // globe on top
+  ctx.beginPath();
+  ctx.arc(0, -78, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,80,0,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(0, -78, 22, 0, Math.PI * 2);
+  ctx.moveTo(-22, -78);
+  ctx.bezierCurveTo(-8, -88, 8, -68, 22, -78);
+  ctx.stroke();
+  // base
+  ctx.fillStyle = '#b8860b';
+  roundRect(-26, 10, 52, 16, 5);
+  ctx.fill();
+  ctx.fillStyle = '#8a6508';
+  roundRect(-32, 26, 64, 12, 5);
+  ctx.fill();
+  // sparkles
+  if (G.frame % 9 === 0) burstSpark(rand(-35, 35) + W / 2, ty + rand(-95, 20), 3, '#fff8d0');
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  ctx.font = '900 54px "Segoe UI", sans-serif';
+  const rainbow = `hsl(${(G.frame * 2) % 360}, 90%, 65%)`;
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+  ctx.strokeText('WORLD CHAMPIONS!', W / 2, 120);
+  ctx.fillStyle = rainbow;
+  ctx.fillText('WORLD CHAMPIONS!', W / 2, 120);
+
+  ctx.font = '800 32px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`${G.player.flag} ${G.player.name} ${G.player.flag}`, W / 2, 170);
+
+  ctx.font = '600 19px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText('From the spot, with ice in your veins.', W / 2, 420);
+  ctx.fillText('The 2026 World Cup is yours. 🏆', W / 2, 450);
+
+  if (G.frame % 30 === 0) {
+    burstConfetti(rand(60, W - 60), -10, 10, ['#ffd24a', '#fff', G.player.c1, G.player.c2, '#3ddc84']);
+  }
+
+  if (G.phaseT > 90 && Math.sin(G.frame * 0.1) > -0.2) {
+    ctx.font = '800 20px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#cfe0ff';
+    ctx.fillText('CLICK TO PLAY AGAIN', W / 2, 530);
+  }
+}
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+function frame() {
+  update();
+
+  ctx.save();
+  if (G.shake > 0.5) {
+    ctx.translate(rand(-G.shake, G.shake), rand(-G.shake, G.shake));
+  }
+
+  switch (G.scene) {
+    case 'menu':       drawMenu(); break;
+    case 'select':     drawSelect(); break;
+    case 'matchIntro': drawMatchIntro(); break;
+    case 'shootout':   drawShootout(); break;
+    case 'matchOver':  drawMatchOver(); break;
+    case 'champion':   drawChampion(); break;
+  }
+
+  drawParticles();
+  ctx.restore();
+
+  requestAnimationFrame(frame);
+}
+
+// keep canvas fitting the window
+function fit() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H, 1.4);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+}
+window.addEventListener('resize', fit);
+fit();
+frame();
+</script>
+</body>
+</html>
